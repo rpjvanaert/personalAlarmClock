@@ -16,6 +16,7 @@ LiquidCrystal_I2C lcd(0x27,20,4);  // set the LCD address to 0x27 for a 16 chars
 #define BTN_MODE_PIN 12
 #define BTN_PLUS_PIN 13
 #define BTN_MIN_PIN 15
+#define BUZZER_PIN 0
 
 bool buttonConfirm = false;
 bool buttonMode = false;
@@ -32,6 +33,36 @@ String day[8] =
   "Friday",
   "Saturday",
   "Sunday"
+};
+
+const int STATE_TIME_SHOW = 0;
+const int STATE_ALARM_SET = 1;
+const int STATE_TIME_SET = 2;
+
+int state = 0;
+
+const int TIMER_REFRESH_LCD = 0;
+const int TIMER_BUZZER_ALARM = 1;
+
+//const int TIMER_BUTTON_PLUS = 2;
+//const int TIMER_BUTTON_MIN = 3;
+
+unsigned long timer[2];
+const long REFRESH_DISPLAY_TIME = 5000;    // 5 seconds
+
+const long BUZZER_TOGGLE_TIME_ON = 250;     // 250 milliseconds
+const long BUZZER_TOGGLE_TIME_OFF = 750;    // 750 milliseconds
+
+int buttonPlusCount;
+int buttonMinCount;
+
+int alarmSettings[] =
+{
+  0,  //Enabled/disabled (1/0)
+  7,  //Hours
+  0,  //Minutes
+  1,  //digitalWrite HIGH/LOW state of buzzer (1/0)
+  0   //Alarm is running (1/0)
 };
 
 void setup() {
@@ -54,33 +85,224 @@ void setup() {
   pinMode(BTN_MODE_PIN, INPUT);
   pinMode(BTN_PLUS_PIN, INPUT);
   pinMode(BTN_MIN_PIN, INPUT);
+
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, HIGH);
+
+  timer[TIMER_REFRESH_LCD] = millis();
+  timer[TIMER_BUZZER_ALARM] = millis();
+
+  //Posibility for using timer to ramp up plus and minus
+  //timer[TIMER_BUTTON_PLUS] = millis();
+  //timer[TIMER_BUTTON_MIN] = millis();
 }
 
 void loop() {
-  
-  /*
-  if (buttonPressed(BTN_CONFIRM_PIN)){
-    minutes += 30;
-    timeChanged = true;
-  }
-  if (buttonPressed(BTN_MODE_PIN)){
-    minutes -= 30;
-    timeChanged = true;
-  }
-  if (buttonPressed(BTN_PLUS_PIN)){
-    minutes++;
-    timeChanged = true;
-  }
-  if (buttonPressed(BTN_MIN_PIN)){
-    minutes--;
-    timeChanged = true;
-  }
-  */
 
-  displayTime(true);
+  if(!checkAlarm()){
+    switch (state){
+      case STATE_TIME_SHOW:
+        //code
   
-  delay(250);
+        if (buttonAction(BTN_MODE_PIN)){
+          state = STATE_ALARM_SET;
+          displayAlarm();
+          break;
+        }
+        
+        if (timerCheck(TIMER_REFRESH_LCD, REFRESH_DISPLAY_TIME)){
+          displayTime(true);
+        }
+        
+        break;
+  
+  
+  
+        
+      case STATE_ALARM_SET:
+        //code
+  
+        if (buttonAction(BTN_MODE_PIN)){
+          state = STATE_TIME_SET;
+          displayTimeSet();
+          break;
+        }
+  
+        if (buttonAction(BTN_CONFIRM_PIN)){
+          alarmSettings[0] ^= 1; //togle enable
+          displayAlarm();
+        } else if (buttonAction(BTN_PLUS_PIN)){
+          alarmPlus();
+          displayAlarm();
+        } else if (buttonAction(BTN_MIN_PIN)){
+          alarmMin();
+          displayAlarm();
+        } else if (timerCheck(TIMER_REFRESH_LCD, REFRESH_DISPLAY_TIME)){
+          displayAlarm();
+        }
+  
+        break;
+  
+  
+  
+        
+      case STATE_TIME_SET:
+        //code
+  
+        if (buttonAction(BTN_MODE_PIN)){
+          state = STATE_TIME_SHOW;
+          displayTime(true);
+          break;
+        }
+  
+        if (buttonAction(BTN_PLUS_PIN)){
+          ++hoursOffset;
+          displayTimeSet();
+        } else if (buttonAction(BTN_MIN_PIN)){
+          --hoursOffset;
+          displayTimeSet();
+        }
+        if (hoursOffset > 24){
+          hoursOffset = 24;
+        } else if (hoursOffset < -24){
+          hoursOffset = -24;
+        }
+  
+        if (timerCheck(TIMER_REFRESH_LCD, REFRESH_DISPLAY_TIME)){
+          displayTimeSet();
+        }
+  
+        break;
+      default:
+        //code
+  
+        break;
+      
+    }
+  }
+  
+    
+  delay(50);
 }
+
+bool checkAlarm(){
+  if (alarmSettings[0] == 1){
+    if (buttonAction(BTN_CONFIRM_PIN)){
+      alarmSettings[0] = 0;
+      digitalWrite(BUZZER_PIN, HIGH);
+      alarmSettings[4] = 0;
+      Serial.println("Stopping alarm");
+      resetTimer(TIMER_REFRESH_LCD);
+      return false;
+    }
+
+    timeClient.update();
+    int hoursCurrent = processTimeOffset(timeClient.getHours());
+    int minutesCurrent = timeClient.getMinutes();
+    
+    if (hoursCurrent == alarmSettings[1] && minutesCurrent == alarmSettings[2]){
+      alarmSettings[4] = 1;
+      resetTimer(TIMER_REFRESH_LCD);
+      displayAlarm(hoursCurrent, minutesCurrent);
+      Serial.println("\nAlarm running");
+    }
+
+    if (alarmSettings[3] == 1 && timerCheck(TIMER_BUZZER_ALARM, BUZZER_TOGGLE_TIME_ON) && alarmSettings[4] == 1){
+      digitalWrite(BUZZER_PIN, HIGH);
+      alarmSettings[3] = 0;
+      displayAlarm(hoursCurrent, minutesCurrent);
+      return true;
+      
+    } else {
+      if (alarmSettings[3] == 0 && timerCheck(TIMER_BUZZER_ALARM, BUZZER_TOGGLE_TIME_OFF) && alarmSettings[4] == 1){
+        digitalWrite(BUZZER_PIN, LOW);
+        alarmSettings[3] = 1;
+        displayAlarm(hoursCurrent, minutesCurrent);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void alarmPlus(){
+  int nextMin = alarmSettings[2] + 1;
+  int nextHour = alarmSettings[1];
+  if (nextMin >= 60){
+    nextMin = 0;
+    nextHour += 1;
+    if (nextHour >= 24){
+      nextHour = 0;
+    }
+  }
+  alarmSettings[1] = nextHour;
+  alarmSettings[2] = nextMin;
+}
+
+void alarmMin(){
+  int nextMin = alarmSettings[2] - 1;
+  int nextHour = alarmSettings[1];
+  if (nextMin < 0){
+    nextMin = 59;
+    nextHour--;
+    if (nextHour < 0){
+      nextHour = 23;
+    }
+  }
+  alarmSettings[1] = nextHour;
+  alarmSettings[2] = nextMin;
+}
+
+void displayAlarm(int hours, int minutes){
+  lcd.clear();
+  
+  String timeString = getTimeString(hours, minutes);
+
+  lcd.setCursor(5,0);
+  lcd.print("ALARM!");
+
+  lcd.setCursor(0,1);
+  lcd.print(timeString);
+}
+
+void displayTimeSet(){
+  lcd.clear();
+  
+  timeClient.update();
+  int hours = timeClient.getHours();
+  int minutes = timeClient.getMinutes();
+  int dayIndex = timeClient.getDay();
+
+  //Format time and print on LCD.
+  String timeString = getTimeString(processTimeOffset(hours), minutes);
+  lcd.setCursor(0,0);
+  lcd.print(timeString);
+
+  lcd.setCursor(0,1);
+
+  lcd.print("Configure time");
+}
+
+void displayAlarm(){
+
+  //TODO FIX ALARM showing
+  lcd.clear();
+
+  lcd.setCursor(0,0);
+  
+  if (alarmSettings[0] == 1){  
+    lcd.print("Alarm enabled");
+  
+  } else {
+    lcd.print("Alarm disabled");
+  }
+
+  String alarmTimeString = getTimeString(alarmSettings[1], alarmSettings[2]);
+
+  lcd.setCursor(0,1);
+  lcd.print("at: " + alarmTimeString);
+}
+
 
 /**
  * displayTime
@@ -96,6 +318,8 @@ void loop() {
  *    it doesn't blink out and on.
  */
 void displayTime(bool day){
+
+  lcd.clear();
   
   //Update NTPClient and get hours, minutes and day.
   timeClient.update();
@@ -104,7 +328,7 @@ void displayTime(bool day){
   int dayIndex = timeClient.getDay();
 
   //Format time and print on LCD.
-  String timeString = getTimeString(hours, minutes);
+  String timeString = getTimeString(processTimeOffset(hours), minutes);
   lcd.setCursor(0,0);
   lcd.print(timeString);
 
@@ -129,9 +353,6 @@ void displayTime(bool day){
  */
 String getTimeString(int hours, int minutes){
 
-  //Process time offset of hours.
-  hours = processTimeOffset(hours);
-
   //Put hours and minutes into String.
   String hoursString = String(hours);
   String minutesString = String(minutes);
@@ -139,6 +360,10 @@ String getTimeString(int hours, int minutes){
   //Format minutes, put '0' in front if 1 digit.
   if (minutesString.length() == 1){
     minutesString = "0" + minutesString;
+  }
+
+  if (hoursString.length() == 1){
+    hoursString = "0" + hoursString;
   }
 
   return hoursString + " : " + minutesString;
@@ -279,6 +504,18 @@ bool buttonAction(int pin){
       
     default:
       break;
+  }
+  return false;
+}
+
+void resetTimer(int timerIndex){
+  timer[timerIndex] = millis();
+}
+
+bool timerCheck(int timerIndex, unsigned long timerTriggerMs){
+  if (timer[timerIndex] + timerTriggerMs <= millis()){
+    resetTimer(timerIndex);
+    return true;
   }
   return false;
 }
